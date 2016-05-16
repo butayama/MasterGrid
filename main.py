@@ -41,10 +41,6 @@ class Grid(GridLayout):
 
     def __init__(self, **kwargs):
         super(Grid, self).__init__(**kwargs)
-        self.channel = self.app.config.getint('MIDI', 'Channel')
-        self.velocity = self.app.config.getint('MIDI', 'Velocity')
-        self.sensitivity = self.app.config.getint('MIDI', 'Sensitivity')
-        self.aftertouch = self.app.config.getboolean('MIDI', 'Aftertouch')
         self._keyboard = Window.request_keyboard(self._keyboard_closed, self)
         self._keyboard.bind(on_key_down=self._on_keyboard_down)
 
@@ -65,7 +61,6 @@ class Grid(GridLayout):
         for key in self.children:
             if key.collide_point(*touch):
                 return key.index
-        return None
 
     def same_note(self, touch1, touch2):
         return self.which_note(touch1) == self.which_note(touch2)
@@ -85,32 +80,37 @@ class Grid(GridLayout):
         return self.which_note(touch.ppos)
 
     def pressure(self, touch):
-        if self.aftertouch:
-            return self.velocity - round(abs(self.note_center(touch.pos) - touch.y)) * self.sensitivity
+        velocity = self.app.config.getint('MIDI', 'Velocity')
+        sensitivity = self.app.config.getint('MIDI', 'Sensitivity')
+        if self.app.config.getboolean('MIDI', 'Aftertouch'):
+            return velocity - round(abs(self.note_center(touch.pos) - touch.y)) * sensitivity
         else:
-            return self.velocity
+            return velocity
 
     def note_on(self, note, velocity, channel):
-        return self.midi.note_on(note, velocity, self.channel)
+        return self.midi.note_on(note, velocity, channel)
 
     def note_off(self, note, channel):
-        return self.midi.note_off(note, 0, self.channel)
+        return self.midi.note_off(note, 0, channel)
 
     def on_touch_down(self, touch):
+        channel = self.app.config.getint('MIDI', 'Channel')
         if self.cur(touch):
-            self.note_on(self.cur(touch), self.pressure(touch), self.channel)
+            self.note_on(self.cur(touch), self.pressure(touch), channel)
 
     def on_touch_up(self, touch):
+        channel = self.app.config.getint('MIDI', 'Channel')
         if self.cur(touch):
-            self.note_off(self.cur(touch), self.channel)
+            self.note_off(self.cur(touch), channel)
 
     def on_touch_move(self, touch):
+        channel = self.app.config.getint('MIDI', 'Channel')
         if self.cur(touch) and self.prev(touch):
             if self.new_note(touch):
-                self.note_off(self.prev(touch), self.channel)
-                self.note_on(self.cur(touch), self.pressure(touch), self.channel)
-            if self.aftertouch:
-                self.midi.write_short(0xA0 + self.channel, self.cur(touch), self.pressure(touch))
+                self.note_off(self.prev(touch), channel)
+                self.note_on(self.cur(touch), self.pressure(touch), channel)
+            if self.app.config.getboolean('MIDI', 'Aftertouch'):
+                self.midi.write_short(0xA0 + channel, self.cur(touch), self.pressure(touch))
 
 class SettingMIDI(SettingItem):
     '''Implementation of an option list in top of :class:`SettingItem`.
@@ -154,7 +154,7 @@ class SettingMIDI(SettingItem):
 
         # add all the selectable MIDI output devices
         for i in range(device_count):
-            if pygame.midi.get_device_info(i)[3] == 1 and (pygame.midi.get_device_info(i)[4] == 0 or pygame.midi.get_device_info(i)[1] == self.value):
+            if pygame.midi.get_device_info(i)[3] == 1 and (pygame.midi.get_device_info(i)[4] == 0 or pygame.midi.get_device_info(i)[1].decode() == self.value):
                 # if it's an output device and it's not already opened (unless it's the device opened by ME), display it in list.
                 # if this is the device that was selected before, display it pressed
                 state = 'down' if pygame.midi.get_device_info(i)[1].decode() == self.value else 'normal'
@@ -172,22 +172,19 @@ class SettingMIDI(SettingItem):
 
 class MasterGrid(App):
     title = 'MasterGrid'
+    grid = ObjectProperty(None)
 
     def set_midi_device(self):
         c = pygame.midi.get_count()
         id_device_from_settings = -1
-        print('%s midi devices found' % c)
-        for i in range(c):
+        for i in reversed(range(c)):
             if pygame.midi.get_device_info(i)[1].decode() == self.config.get('MIDI', 'Device'):
                 id_device_from_settings = i
-        print('Default is %s' % pygame.midi.get_device_info(pygame.midi.get_default_output_id())[1].decode())
 
         if id_device_from_settings != -1:
             self.midi_device = id_device_from_settings
-            print('MIDI device "%s" found. Connecting.' % pygame.midi.get_device_info(id_device_from_settings)[1].decode())
         else:
             self.midi_device = pygame.midi.get_default_output_id()
-            print('Warning: No MIDI device named "%s" found. Choosing the system default ("%s").' % (self.config.get('MIDI', 'Device'), pygame.midi.get_device_info(self.midi_device)[1].decode()))
 
         if pygame.midi.get_device_info(self.midi_device)[4] == 1:
             print('Error: Unable to open MIDI device - Already in use!')
@@ -206,7 +203,7 @@ class MasterGrid(App):
         black = [0,0,0,1]
         white = [255,255,255,1]
 
-        grid = Grid(app=self, midi=self.midi, rows=rows, cols=keys)
+        self.grid = Grid(app=self, midi=self.midi, rows=rows, cols=keys)
 
         for row in reversed(range(rows)):
             for note in reversed(range(lownote, lownote + keys)):
@@ -215,13 +212,13 @@ class MasterGrid(App):
                 textcolor = white if accidental else black
                 label = notenames[note % 12]
                 key = Key(index=note, text=label, background_color=keycolor, color=textcolor)
-                grid.add_widget(key, len(grid.children))
+                self.grid.add_widget(key, len(self.grid.children))
             lownote += interval
 
-        return grid
+        return self.grid
 
     def resize_grid(self):
-        self.clear_widgets()
+        self.grid.clear_widgets()
         self.build()
 
     def build_config(self, config):
