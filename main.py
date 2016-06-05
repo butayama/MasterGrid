@@ -32,58 +32,82 @@ from kivy.uix.popup import Popup
 from kivy.properties import ObjectProperty, NumericProperty
 import pygame.midi
 
-class Key(Button):
-    index = NumericProperty()
+midi_channels = [[None, c] for c in range(16)]
 
-class Grid(GridLayout):
+class Key(Button):
     app = ObjectProperty(None)
     midi = ObjectProperty(None)
+    note = NumericProperty()
 
-    def __init__(self, **kwargs):
-        super(Grid, self).__init__(**kwargs)
-        self._keyboard = Window.request_keyboard(self._keyboard_closed, self)
-        self._keyboard.bind(on_key_down=self._on_keyboard_down)
+    def on_touch_down(self, touch):
+        channel = self.channel(touch) if self.bend_enabled() else self.app.config.getint('MIDI', 'Channel')
+        if self.collide_point(*touch.pos):
+            self.note_on(self.note, self.pressure(touch), channel)
 
-    def _keyboard_closed(self):
-        self._keyboard.unbind(on_key_down=self._on_keyboard_down)
-        self._keyboard = None
+    def on_touch_up(self, touch):
+        channel = self.channel(touch) if self.bend_enabled() else self.app.config.getint('MIDI', 'Channel')
+        if self.collide_point(*touch.pos):
+            if self.bend_enabled():
+                self.note_off(self.orig_note(touch).note, channel)
+                self.free_channel(touch, channel)
+            else:
+                self.note_off(self.note, channel)
 
-    def _on_keyboard_down(self, keyboard, keycode, text, modifiers):
-        if keycode[1] == 'spacebar':
-            Window.toggle_fullscreen()
-        elif keycode[1] == 'tab':
-            self.app.open_settings()
-        elif keycode[1] == 'escape':
-            quit()
-        return True
+    def on_touch_move(self, touch):
+        channel = self.channel(touch) if self.bend_enabled() else self.app.config.getint('MIDI', 'Channel')
+        if self.collide_point(*touch.pos) and self.new_note(touch).note and self.prev_note(touch).note:
+            if not self.bend_enabled():
+                self.note_off(self.prev_note(touch).note, channel)
+                self.note_on(self.new_note(touch).note, self.pressure(touch), channel)
+            else:
+                pixel_distance = int(touch.x) - (touch.ox + (self.width / 2.0))
+                pitch_value = int(pixel_distance * 8192.0 / (self.app.config.getint('MIDI', 'PitchBendRange') * self.width) + 0.5) + 8192
+                if pitch_value > 16383:
+                    pitch_value = 16383
+                elif pitch_value < 0:
+                    pitch_value = 0
+                self.midi.write_short(0xE0 + channel, pitch_value - int(pitch_value / 128) * 128, int(pitch_value / 128))
+            if self.app.config.getboolean('MIDI', 'Aftertouch'):
+                self.midi.write_short(0xA0 + channel, self.new_note(touch).note, self.pressure(touch))
 
-    def which_note(self, touch):
-        for key in self.children:
-            if key.collide_point(*touch):
-                return key.index
+    def channel(self, touch):
+        if 'channel' not in touch.ud:
+            return self.alloc_channel(touch)
+        else:
+            return touch.ud['channel']
 
-    def same_note(self, touch1, touch2):
-        return self.which_note(touch1) == self.which_note(touch2)
+    def alloc_channel(self, touch):
+        for channel in midi_channels:
+            if not channel[0]:
+                channel[0] = touch.uid
+                touch.ud['channel'] = channel[1]
+                return touch.ud['channel']
+
+    def free_channel(self, touch, channel):
+        midi_channels[channel][0] = None
+
+    def bend_enabled(self):
+        return self.app.config.getboolean('MIDI', 'Pitchbend')
 
     def new_note(self, touch):
-        return True if not self.same_note(touch.pos, touch.ppos) else False
+        for key in self.parent.children:
+            if key.collide_point(*touch.pos):
+                return key
 
-    def note_center(self, touch):
-        for key in self.children:
-            if key.collide_point(*touch):
-                return key.center_y
+    def prev_note(self, touch):
+        for key in self.parent.children:
+            if key.collide_point(*touch.ppos):
+                return key
 
-    def cur(self, touch):
-        return self.which_note(touch.pos)
-
-    def prev(self, touch):
-        return self.which_note(touch.ppos)
+    def orig_note(self, touch):
+        for key in self.parent.children:
+            if key.collide_point(*touch.opos):
+                return key
 
     def pressure(self, touch):
         velocity = self.app.config.getint('MIDI', 'Velocity')
-        sensitivity = self.app.config.getint('MIDI', 'Sensitivity')
         if self.app.config.getboolean('MIDI', 'Aftertouch'):
-            return velocity - round(abs(self.note_center(touch.pos) - touch.y)) * sensitivity
+            return velocity - round(abs(self.new_note(touch).center_y - touch.y)) * self.app.config.getint('MIDI', 'Sensitivity')
         else:
             return velocity
 
@@ -93,24 +117,44 @@ class Grid(GridLayout):
     def note_off(self, note, channel):
         return self.midi.note_off(note, 0, channel)
 
-    def on_touch_down(self, touch):
-        channel = self.app.config.getint('MIDI', 'Channel')
-        if self.cur(touch):
-            self.note_on(self.cur(touch), self.pressure(touch), channel)
+class Grid(GridLayout):
+    app = ObjectProperty(None)
+    midi = ObjectProperty(None)
 
-    def on_touch_up(self, touch):
-        channel = self.app.config.getint('MIDI', 'Channel')
-        if self.cur(touch):
-            self.note_off(self.cur(touch), channel)
+    def _keyboard_closed(self):
+        self._keyboard.unbind(on_key_down=self._on_keyboard_down)
+        self._keyboard = None
 
-    def on_touch_move(self, touch):
-        channel = self.app.config.getint('MIDI', 'Channel')
-        if self.cur(touch) and self.prev(touch):
-            if self.new_note(touch):
-                self.note_off(self.prev(touch), channel)
-                self.note_on(self.cur(touch), self.pressure(touch), channel)
-            if self.app.config.getboolean('MIDI', 'Aftertouch'):
-                self.midi.write_short(0xA0 + channel, self.cur(touch), self.pressure(touch))
+    def _on_keyboard_down(self, keyboard, keycode, text, modifiers):
+        if keycode[1] == 'spacebar':
+            Window.toggle_fullscreen()
+        elif keycode[1] == 'escape':
+            quit()
+        elif keycode[1] == 'tab':
+            self.app.open_settings()
+        return True
+
+    def __init__(self, **kwargs):
+        super(Grid, self).__init__(**kwargs)
+        self._keyboard = Window.request_keyboard(self._keyboard_closed, self)
+        self._keyboard.bind(on_key_down=self._on_keyboard_down)
+
+        rows = self.app.config.getint('MIDI', 'Rows')
+        keys = self.app.config.getint('MIDI', 'Keys')
+        lownote = self.app.config.getint('MIDI', 'LowNote')
+        interval = self.app.config.getint('MIDI', 'Interval')
+
+        notenames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+        for row in reversed(range(rows)):
+            for note in reversed(range(lownote, lownote + keys)):
+                accidental = True if note % 12 in [1, 3, 6, 8, 10] else False
+                keycolor = [0,0,0,1] if accidental else [255,255,255,1]
+                textcolor = [1,1,1,1] if accidental else [0,0,0,1]
+                label = notenames[note % 12]
+                key = Key(app=self.app, midi=self.midi, note=note, text=label, background_color=keycolor, color=textcolor)
+                self.add_widget(key, len(self.children))
+            lownote += interval
 
 class SettingMIDI(SettingItem):
     '''Implementation of an option list in top of :class:`SettingItem`.
@@ -194,32 +238,17 @@ class MasterGrid(App):
     def build(self):
         pygame.midi.init()
         self.set_midi_device()
+        self.build_grid()
+        return self.grid
+
+    def build_grid(self):
         rows = self.config.getint('MIDI', 'Rows')
         keys = self.config.getint('MIDI', 'Keys')
-        lownote = self.config.getint('MIDI', 'LowNote')
-        interval = self.config.getint('MIDI', 'Interval')
-
-        notenames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-        black = [0,0,0,1]
-        white = [255,255,255,1]
-
         self.grid = Grid(app=self, midi=self.midi, rows=rows, cols=keys)
-
-        for row in reversed(range(rows)):
-            for note in reversed(range(lownote, lownote + keys)):
-                accidental = True if note % 12 in [1, 3, 6, 8, 10] else False
-                keycolor = black if accidental else white
-                textcolor = white if accidental else black
-                label = notenames[note % 12]
-                key = Key(index=note, text=label, background_color=keycolor, color=textcolor)
-                self.grid.add_widget(key, len(self.grid.children))
-            lownote += interval
-
-        return self.grid
 
     def resize_grid(self):
         self.grid.clear_widgets()
-        self.build()
+        self.build_grid()
 
     def build_config(self, config):
         config.adddefaultsection('MIDI')
@@ -227,6 +256,8 @@ class MasterGrid(App):
         config.setdefault('MIDI', 'Channel', '0')
         config.setdefault('MIDI', 'Velocity', '127')
         config.setdefault('MIDI', 'Aftertouch', True)
+        config.setdefault('MIDI', 'Pitchbend', False)
+        config.setdefault('MIDI', 'PitchbendRange', '24')
         config.setdefault('MIDI', 'Sensitivity', '3')
         config.setdefault('MIDI', 'Rows', '13')
         config.setdefault('MIDI', 'Keys', '25')
@@ -241,6 +272,8 @@ class MasterGrid(App):
             { "type": "numeric", "title": "Velocity", "desc": "Default velocity of the midi notes", "section": "MIDI", "key": "Velocity"},
             { "type": "bool", "title": "Aftertouch", "desc": "Make notes decrease in volume as touch moves away from the key's vertical center", "section": "MIDI", "key": "Aftertouch"},
             { "type": "numeric", "title": "Aftertouch Sensitivity", "desc": "Velocity change multiplier [1 - 4]", "section": "MIDI", "key": "Sensitivity"},
+            { "type": "bool", "title": "Pitchbend", "desc": "Continuous pitchbend", "section": "MIDI", "key": "Pitchbend"},
+            { "type": "numeric", "title": "Pitchbend Range", "desc": "Pitchbend range", "section": "MIDI", "key": "PitchbendRange"},
             { "type": "numeric", "title": "Lowest Note", "desc": "MIDI note number of the first note (bottom left key)", "section": "MIDI", "key": "LowNote"},
             { "type": "numeric", "title": "Rows", "desc": "Number of rows of keys", "section": "MIDI", "key": "Rows"},
             { "type": "numeric", "title": "Keys per row", "desc": "Number of notes per row", "section": "MIDI", "key": "Keys"},
@@ -258,6 +291,10 @@ class MasterGrid(App):
         elif token == ('MIDI', 'Aftertouch'):
             pass
         elif token == ('MIDI', 'Sensitivity'):
+            pass
+        elif token == ('MIDI', 'Pitchbend'):
+            pass
+        elif token == ('MIDI', 'PitchbendRange'):
             pass
         elif token == ('MIDI', 'LowNote'):
             self.resize_grid()
