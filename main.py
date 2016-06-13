@@ -55,11 +55,8 @@ class Key(Button):
 
     def on_touch_move(self, touch):
         channel = self.channel(touch) if self.bend_enabled() else self.app.config.getint('MIDI', 'Channel')
-        if self.collide_point(*touch.pos) and self.new_note(touch).note and self.prev_note(touch).note:
-            if not self.bend_enabled():
-                self.note_off(self.prev_note(touch).note, channel)
-                self.note_on(self.new_note(touch).note, self.pressure(touch), channel)
-            else:
+        if self.collide_point(*touch.pos):
+            if self.bend_enabled():
                 pixel_distance = int(touch.x) - (touch.ox + (self.width / 2.0))
                 pitch_value = int(pixel_distance * 8192.0 / (self.app.config.getint('MIDI', 'PitchBendRange') * self.width) + 0.5) + 8192
                 if pitch_value > 16383:
@@ -67,6 +64,9 @@ class Key(Button):
                 elif pitch_value < 0:
                     pitch_value = 0
                 self.midi.write_short(0xE0 + channel, pitch_value - int(pitch_value / 128) * 128, int(pitch_value / 128))
+            elif self.new_note(touch).note != self.prev_note(touch).note:
+                self.note_off(self.prev_note(touch).note, channel)
+                self.note_on(self.new_note(touch).note, self.pressure(touch), channel)
             if self.app.config.getboolean('MIDI', 'Aftertouch'):
                 self.midi.write_short(0xA0 + channel, self.new_note(touch).note, self.pressure(touch))
 
