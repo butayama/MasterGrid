@@ -238,17 +238,17 @@ class MasterGrid(App):
     def build(self):
         pygame.midi.init()
         self.set_midi_device()
-        self.build_grid()
-        return self.grid
+        return self.build_grid()
 
     def build_grid(self):
         rows = self.config.getint('MIDI', 'Rows')
         keys = self.config.getint('MIDI', 'Keys')
         self.grid = Grid(app=self, midi=self.midi, rows=rows, cols=keys)
+        return self.grid
 
     def resize_grid(self):
         self.grid.clear_widgets()
-        self.build_grid()
+        self.grid.add_widget(self.build_grid())
 
     def build_config(self, config):
         config.adddefaultsection('MIDI')
