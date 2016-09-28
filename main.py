@@ -1,7 +1,7 @@
 #!/usr/bin/python
 '''
 MasterGrid
-Copyright (c) 2015 Robert Oscilowski
+Copyright (c) 2016 Robert Oscilowski
 
 Multitouch MIDI keyboard using Kivy.
 
@@ -32,64 +32,65 @@ from kivy.uix.popup import Popup
 from kivy.properties import ObjectProperty, NumericProperty
 import pygame.midi
 
-midi_channels = [[None, c] for c in range(16)]
-
 class Key(Button):
     app = ObjectProperty(None)
     midi = ObjectProperty(None)
+    grid = ObjectProperty(None)
     note = NumericProperty()
 
     def on_touch_down(self, touch):
-        channel = self.channel(touch) if self.bend_enabled() else self.app.config.getint('MIDI', 'Channel')
-        if self.collide_point(*touch.pos):
-            self.note_on(self.note, self.pressure(touch), channel)
+        if not self.collide_point(*touch.pos): return
+        channel = self.get_channel(touch)
+        self.note_on(self.note, self.pressure(touch), channel)
 
     def on_touch_up(self, touch):
-        channel = self.channel(touch) if self.bend_enabled() else self.app.config.getint('MIDI', 'Channel')
-        if self.collide_point(*touch.pos):
-            if self.bend_enabled():
-                self.note_off(self.orig_note(touch).note, channel)
-                self.free_channel(touch, channel)
-            else:
-                self.note_off(self.note, channel)
+        if not self.collide_point(*touch.pos): return
+        channel = self.get_channel(touch)
+        if self.bend_enabled():
+            self.note_off(self.orig_note(touch).note, channel)
+            self.free_channel(channel)
+        else:
+            self.note_off(self.cur_note(touch).note, channel)
 
     def on_touch_move(self, touch):
-        channel = self.channel(touch) if self.bend_enabled() else self.app.config.getint('MIDI', 'Channel')
-        if self.collide_point(*touch.pos):
-            if self.bend_enabled():
-                pixel_distance = int(touch.x) - (touch.ox + (self.width / 2.0))
-                pitch_value = int(pixel_distance * 8192.0 / (self.app.config.getint('MIDI', 'PitchBendRange') * self.width) + 0.5) + 8192
-                if pitch_value > 16383:
-                    pitch_value = 16383
-                elif pitch_value < 0:
-                    pitch_value = 0
-                self.midi.write_short(0xE0 + channel, pitch_value - int(pitch_value / 128) * 128, int(pitch_value / 128))
-            elif self.new_note(touch).note != self.prev_note(touch).note:
-                self.note_off(self.prev_note(touch).note, channel)
-                self.note_on(self.new_note(touch).note, self.pressure(touch), channel)
+        if not self.collide_point(*touch.pos): return
+        channel = self.get_channel(touch)
+        if self.bend_enabled():
+            pixel_distance = int(touch.x) - (touch.ox + (self.width / 2.0))
+            pitch_value = int(pixel_distance * 8192.0 / (self.app.config.getint('MIDI', 'PitchBendRange') * self.width) + 0.5) + 8192
+            if pitch_value > 16383:
+                pitch_value = 16383
+            elif pitch_value < 0:
+                pitch_value = 0
+            self.midi.write_short(0xE0 + channel, pitch_value - int(pitch_value / 128) * 128, int(pitch_value / 128))
             if self.app.config.getboolean('MIDI', 'Aftertouch'):
-                self.midi.write_short(0xA0 + channel, self.new_note(touch).note, self.pressure(touch))
-
-    def channel(self, touch):
-        if 'channel' not in touch.ud:
-            return self.alloc_channel(touch)
+                self.midi.write_short(0xA0 + channel, self.cur_note(touch).note, self.pressure(touch))
         else:
-            return touch.ud['channel']
+            if self.cur_note(touch) and self.prev_note(touch):
+                if self.cur_note(touch).note != self.prev_note(touch).note:
+                    self.new_note(touch)
+            if self.app.config.getboolean('MIDI', 'Aftertouch') and self.cur_note(touch):
+                self.midi.write_short(0xA0 + channel, self.cur_note(touch).note, self.pressure(touch))
 
-    def alloc_channel(self, touch):
-        for channel in midi_channels:
-            if not channel[0]:
-                channel[0] = touch.uid
-                touch.ud['channel'] = channel[1]
+    def get_channel(self, touch):
+        if not self.bend_enabled():
+            return self.app.config.getint('MIDI', 'Channel')
+        else:
+            if 'channel' in touch.ud:
                 return touch.ud['channel']
+            for channel in self.grid.channels:
+                if channel[0] == None:
+                    channel[0] = touch.uid
+                    touch.ud['channel'] = channel[1]
+                    return touch.ud['channel']
 
-    def free_channel(self, touch, channel):
-        midi_channels[channel][0] = None
+    def free_channel(self, channel):
+        self.grid.channels[channel][0] = None
 
     def bend_enabled(self):
         return self.app.config.getboolean('MIDI', 'Pitchbend')
 
-    def new_note(self, touch):
+    def cur_note(self, touch):
         for key in self.parent.children:
             if key.collide_point(*touch.pos):
                 return key
@@ -104,10 +105,15 @@ class Key(Button):
             if key.collide_point(*touch.opos):
                 return key
 
+    def new_note(self, touch):
+        channel = self.get_channel(touch)
+        self.note_off(self.prev_note(touch).note, channel)
+        self.note_on(self.cur_note(touch).note, self.pressure(touch), channel)
+
     def pressure(self, touch):
         velocity = self.app.config.getint('MIDI', 'Velocity')
         if self.app.config.getboolean('MIDI', 'Aftertouch'):
-            return velocity - round(abs(self.new_note(touch).center_y - touch.y)) * self.app.config.getint('MIDI', 'Sensitivity')
+            return velocity - round(abs(self.cur_note(touch).center_y - touch.y)) * self.app.config.getint('MIDI', 'Sensitivity')
         else:
             return velocity
 
@@ -120,6 +126,7 @@ class Key(Button):
 class Grid(GridLayout):
     app = ObjectProperty(None)
     midi = ObjectProperty(None)
+    channels = [[None, c] for c in range(16)]
 
     def _keyboard_closed(self):
         self._keyboard.unbind(on_key_down=self._on_keyboard_down)
@@ -152,7 +159,7 @@ class Grid(GridLayout):
                 keycolor = [0,0,0,1] if accidental else [255,255,255,1]
                 textcolor = [1,1,1,1] if accidental else [0,0,0,1]
                 label = notenames[note % 12]
-                key = Key(app=self.app, midi=self.midi, note=note, text=label, background_color=keycolor, color=textcolor)
+                key = Key(app=self.app, midi=self.midi, grid=self, note=note, text=label, background_color=keycolor, color=textcolor)
                 self.add_widget(key, len(self.children))
             lownote += interval
 
@@ -268,12 +275,12 @@ class MasterGrid(App):
         settings.register_type('midi', SettingMIDI)
         settings.add_json_panel('MasterGrid Settings', self.config, data='''[
             { "type": "midi", "title": "MIDI output device", "desc": "Device to use for MIDI", "section": "MIDI", "key": "Device"},
-            { "type": "numeric", "title": "MIDI channel", "desc": "MIDI channel to send data to [0 - 15]", "section": "MIDI", "key": "Channel"},
-            { "type": "numeric", "title": "Velocity", "desc": "Default velocity of the midi notes", "section": "MIDI", "key": "Velocity"},
-            { "type": "bool", "title": "Aftertouch", "desc": "Make notes decrease in volume as touch moves away from the key's vertical center", "section": "MIDI", "key": "Aftertouch"},
-            { "type": "numeric", "title": "Aftertouch Sensitivity", "desc": "Velocity change multiplier [1 - 4]", "section": "MIDI", "key": "Sensitivity"},
+            { "type": "numeric", "title": "MIDI channel", "desc": "Global MIDI channel offset (ignored in continuous pitchbend mode)", "section": "MIDI", "key": "Channel"},
+            { "type": "numeric", "title": "Velocity", "desc": "Default note velocity", "section": "MIDI", "key": "Velocity"},
+            { "type": "bool", "title": "Aftertouch", "desc": "Polyphonic aftertouch expression", "section": "MIDI", "key": "Aftertouch"},
+            { "type": "numeric", "title": "Aftertouch Sensitivity", "desc": "Velocity change multiplier", "section": "MIDI", "key": "Sensitivity"},
             { "type": "bool", "title": "Pitchbend", "desc": "Continuous pitchbend", "section": "MIDI", "key": "Pitchbend"},
-            { "type": "numeric", "title": "Pitchbend Range", "desc": "Pitchbend range", "section": "MIDI", "key": "PitchbendRange"},
+            { "type": "numeric", "title": "Pitchbend Range", "desc": "Pitchbend range in semitones", "section": "MIDI", "key": "PitchbendRange"},
             { "type": "numeric", "title": "Lowest Note", "desc": "MIDI note number of the first note (bottom left key)", "section": "MIDI", "key": "LowNote"},
             { "type": "numeric", "title": "Rows", "desc": "Number of rows of keys", "section": "MIDI", "key": "Rows"},
             { "type": "numeric", "title": "Keys per row", "desc": "Number of notes per row", "section": "MIDI", "key": "Keys"},
