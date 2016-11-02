@@ -2,17 +2,14 @@
 ## Multitouch MIDI Grid powered by Python and Kivy
 
 ### Usage
-MasterGrid runs on Windows and Linux, but it should also work on a Mac with a touchscreen.
-This uses PyGame and PortMIDI, which have not yet been fully ported to Android or iOS.
+MasterGrid works on Windows and Linux, and could also be coerced to run on Apple devices.
+This was designed for use with a capacitive touchscreen.
+This requires an Python installation with Kivy, and except on Android, where FluidSynth has been integrated,
+you will also need PyGame and a platform that supports PortMIDI.
 
-MasterGrid does not generate sounds on its own, it relies on external hardware or software
-to play sampled or synthesized sounds - e.g. FluidSynth, Linux Multimedia Studio or ZynAddSubFX.
-To select an output device or program, open the settings menu by pressing Tab.
-
-### Keyboard bindings
-* Tab: opens settings.
-* Space: toggles fullscreen.
-* Escape: closes the app.
+MasterGrid does not generate sounds on its own, it relies on external MIDI hardware or software
+to play sampled or synthesized sounds, such as FluidSynth, Linux Multimedia Studio or ZynAddSubFX.
+You will need to select an output device or program in MasterGrid's settings menu before this will make any sound.
 
 ### Credits
 MasterGrid draws inspiration from various apps by [Rob Fielding](https://github.com/rfielding),

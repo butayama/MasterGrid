@@ -19,132 +19,325 @@ You should have received a copy of the GNU General Public License
 along with MasterGrid. If not, see <http://www.gnu.org/licenses/>
 '''
 
+import os
 import kivy
 from kivy.app import App
 from kivy.core.window import Window
+from kivy.event import EventDispatcher
 from kivy.uix.widget import Widget
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.button import Button
+from kivy.uix.label import Label
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.settings import SettingItem
+from kivy.uix.slider import Slider
+from kivy.uix.textinput import TextInput
 from kivy.uix.popup import Popup
-from kivy.properties import ObjectProperty, NumericProperty
-import pygame.midi
+from kivy.properties import ObjectProperty, NumericProperty, StringProperty
+from kivy.utils import platform
+if platform == 'android':
+    from fluidsynth import fluidsynth
+else:
+    import pygame.midi
+from functools import partial
+
+class FluidMIDI(EventDispatcher):
+    app = ObjectProperty(None)
+    midi = ObjectProperty(None)
+
+    def change_instrument(self, channel, instrument):
+        self.midi.program_change(channel, instrument)
+
+    def note_on(self, note, velocity, channel):
+        self.midi.noteon(channel, note, velocity)
+
+    def note_off(self, note, channel):
+        self.midi.noteoff(channel, note)
+
+    def mod_wheel(self, channel, value):
+        self.midi.cc(channel, 1, value)
+
+    def pitch_bend(self, channel, value):
+        self.midi.pitch_bend(channel, value)
+
+    def set_pitchbend_range(self, value):
+        for channel in range(16):
+            self.midi.pitch_wheel_sens(channel, value)
+
+    def aftertouch(self, channel, note, value):
+        self.midi.key_pressure(channel, note, value)
+
+    def reverb(self, channel, value):
+        self.midi.cc(channel, 91, value)
+
+    def set_reverb(self, value):
+        if self.app.pitchbend_enabled():
+            for channel in range(16):
+                self.reverb(channel, value)
+        else:
+            self.reverb(self.app.config.getint('MIDI', 'Channel'), value)
+
+    def panic(self, value):
+        for channel in range(16):
+            self.midi.cc(channel, 120, 0)
+
+class PyGameMIDI(EventDispatcher):
+    app = ObjectProperty(None)
+    midi = ObjectProperty(None)
+
+    def change_instrument(self, channel, instrument):
+        self.midi.set_instrument(instrument, channel=channel)
+
+    def note_on(self, note, velocity, channel):
+        self.midi.note_on(note, int(velocity), channel)
+
+    def note_off(self, note, channel):
+        self.midi.note_off(note, 0, channel)
+
+    def mod_wheel(self, channel, value):
+        self.midi.write_short(0xB0 + channel, 1, value)
+
+    def pitch_bend(self, channel, value):
+        self.midi.write_short(0xE0 + channel, value - int(value / 128) * 128, int(value / 128))
+
+    def set_pitchbend_range(self, value):
+        for channel in range(16):
+            self.midi.write_short(0xB0 + channel, 100, 0)
+            self.midi.write_short(0xB0 + channel, 101, 0)
+            self.midi.write_short(0xB0 + channel, 6, self.app.config.getint('MIDI', 'PitchbendRange'))
+
+    def aftertouch(self, channel, note, pressure):
+        self.midi.write_short(0xA0 + channel, note, int(pressure))
+
+    def reverb(self, channel, value):
+        self.midi.write_short(0xB0 + channel, 91, value)
+
+    def set_reverb(self, value):
+        if self.app.pitchbend_enabled():
+            for channel in range(16):
+                self.reverb(channel, value)
+        else:
+            self.reverb(self.app.config.getint('MIDI', 'Channel'), value)
+
+    def panic(self, value):
+        for channel in range(16):
+            self.midi.write_short(0xB0 + channel, 120, 0)
+
+class Sizer(BoxLayout):
+    app = ObjectProperty(None)
+    label = StringProperty()
+    low = NumericProperty()
+    high = NumericProperty()
+    inputbox = ObjectProperty(None)
+
+    def __init__(self, **kwargs):
+        super(Sizer, self).__init__(**kwargs)
+        label = Label(text=self.label)
+        self.add_widget(label)
+        controls = BoxLayout()
+        minus = Button(text='-')
+        minus.bind(on_press=self.minus)
+        controls.add_widget(minus)
+        self.inputbox = TextInput(text=self.get(), multiline=False, input_filter='int', input_type='number')
+        self.inputbox.bind(on_text_validate=self.set)
+        controls.add_widget(self.inputbox)
+        plus = Button(text='+')
+        plus.bind(on_press=self.plus)
+        controls.add_widget(plus)
+        self.add_widget(controls)
+
+    def get(self):
+        return self.app.config.get('MIDI', self.label)
+
+    def set(self, instance):
+        self.app.config.set('MIDI', self.label, instance)
+        self.app.config.write()
+        self.inputbox.text = str(instance)
+        self.app.resize_grid()
+
+    def plus(self, value):
+        value = self.app.config.getint('MIDI', self.label)
+        if self.low < value < self.high:
+            self.set(value + 1)
+
+    def minus(self, value):
+        value = self.app.config.getint('MIDI', self.label)
+        if self.low < value < self.high:
+            self.set(value - 1)
+
+class ControlBar(BoxLayout):
+    app = ObjectProperty(None)
+    device = ObjectProperty(None)
+
+    def __init__(self, **kwargs):
+        super(ControlBar, self).__init__(**kwargs)
+        logo = Label(text="MasterGrid")
+        self.add_widget(logo)
+        menu = Button(text="Settings")
+        menu.bind(on_press=self.app.open_settings)
+        self.add_widget(menu)
+        pitchbend = ToggleButton(text="Pitch Bend", state=self.get('Pitchbend'))
+        pitchbend.bind(on_release=partial(self.set, 'Pitchbend'))
+        self.add_widget(pitchbend)
+        aftertouch = ToggleButton(text="Aftertouch", state=self.get('Aftertouch'))
+        aftertouch.bind(on_release=partial(self.set, 'Aftertouch'))
+        self.add_widget(aftertouch)
+        rows = Sizer(label='Rows', app=self.app, orientation='vertical', low=8, high=36)
+        self.add_widget(rows)
+        keys = Sizer(label='Keys', app=self.app, orientation='vertical', low=8, high=36)
+        self.add_widget(keys)
+        if platform == 'android':
+            instrument = Button(text="Instruments")
+            instrument.bind(on_press=self.instrument_list)
+        else:
+            instrument = BoxLayout(orientation='vertical')
+            prog_label = Label(text="Instrument")
+            prog_input = TextInput(on_text_validate=self.set_instrument, multiline=False, input_filter='int', input_type='number')
+            instrument.add_widget(prog_label)
+            instrument.add_widget(prog_input)
+        self.add_widget(instrument)
+        modwheel = BoxLayout(orientation='vertical')
+        modwheel_label = Label(text="Modulation")
+        modwheel_slider = Slider(min=0, max=127)
+        modwheel_slider.bind(on_value=self.mod_wheel)
+        modwheel.add_widget(modwheel_label)
+        modwheel.add_widget(modwheel_slider)
+        self.add_widget(modwheel)
+        reverb = BoxLayout(orientation='vertical')
+        reverb_label = Label(text="Reverb")
+        reverb_slider = Slider(min=0, max=127)
+        reverb_slider.bind(on_value=self.set_reverb)
+        reverb.add_widget(reverb_label)
+        reverb.add_widget(reverb_slider)
+        self.add_widget(reverb)
+        panic = Button(text="Panic")
+        panic.bind(on_press=self.device.panic)
+        self.add_widget(panic)
+
+    def get(self, label):
+        enabled = self.app.config.getboolean('MIDI', label)
+        return 'down' if enabled else 'normal'
+
+    def set(self, label, value):
+        enabled = self.app.config.getboolean('MIDI', label)
+        self.app.config.set('MIDI', label, not enabled)
+        if enabled and label is 'Pitchbend':
+            self.device.set_pitchbend_range(self.app.config.getint('MIDI', 'PitchbendRange'))
+        self.app.config.write()
+
+    def set_instrument(self, instance):
+        if isinstance(instance, int):
+            instrument = instance
+        else:
+            if int(instance.text) > 127:
+                instrument = 0
+            else:
+                instrument = int(instance.text)
+        if self.app.pitchbend_enabled():
+            for channel in range(16):
+                self.device.change_instrument(channel, instrument)
+        else:
+            self.device.change_instrument(self.app.config.getint('MIDI', 'Channel'), instrument)
+
+    def set_reverb(self, value):
+        self.device.set_reverb(value)
+
+    def mod_wheel(self, value):
+        self.device.mod_wheel(self.app.lastchannel, value)
+
+    def instrument_list():
+        layout = GridLayout(cols=1, spacing=10, size_hint_y=None)
+        layout.bind(minimum_height=layout.setter('height'))
+        for i in range(128):
+            btn = Button(text='{num:02d}: {}'.format(num(i), fluidsynth.GM_prog_name[i]), size_hint_y=None, font_size='15sp')
+            layout.add_widget(btn)
+            btn.bind(on_release=partial(set_instrument, i))
+        instruments = ScrollView(size_hint=(1, None), size=(Window.width, Window.height))
+        instruments.add_widget(layout)
+        content = BoxLayout(orientation='vertical', spacing=10)
+        popup = Popup(content=content, title='Choose an instrument:', size_hint=(.9, .9))
+        content.add_widget(instruments)
+        cancel = Button(text='Cancel', size_hint_y=None, font_size='15sp')
+        cancel.bind(on_release=popup.dismiss)
+        content.add_widget(cancel)
+        popup.open()
 
 class Key(Button):
     app = ObjectProperty(None)
-    midi = ObjectProperty(None)
-    grid = ObjectProperty(None)
+    device = ObjectProperty(None)
     note = NumericProperty()
 
-    def on_touch_down(self, touch):
-        if not self.collide_point(*touch.pos): return
-        channel = self.get_channel(touch)
-        self.note_on(self.note, self.pressure(touch), channel)
-
-    def on_touch_up(self, touch):
-        if not self.collide_point(*touch.pos): return
-        channel = self.get_channel(touch)
-        if self.bend_enabled():
-            self.note_off(self.orig_note(touch).note, channel)
-            self.free_channel(channel)
-        else:
-            self.note_off(self.cur_note(touch).note, channel)
-
-    def on_touch_move(self, touch):
-        if not self.collide_point(*touch.pos): return
-        channel = self.get_channel(touch)
-        if self.bend_enabled():
-            pixel_distance = int(touch.x) - (touch.ox + (self.width / 2.0))
-            pitch_value = int(pixel_distance * 8192.0 / (self.app.config.getint('MIDI', 'PitchBendRange') * self.width) + 0.5) + 8192
-            if pitch_value > 16383:
-                pitch_value = 16383
-            elif pitch_value < 0:
-                pitch_value = 0
-            self.midi.write_short(0xE0 + channel, pitch_value - int(pitch_value / 128) * 128, int(pitch_value / 128))
-            if self.app.config.getboolean('MIDI', 'Aftertouch'):
-                self.midi.write_short(0xA0 + channel, self.cur_note(touch).note, self.pressure(touch))
-        else:
-            if self.cur_note(touch) and self.prev_note(touch):
-                if self.cur_note(touch).note != self.prev_note(touch).note:
-                    self.new_note(touch)
-            if self.app.config.getboolean('MIDI', 'Aftertouch') and self.cur_note(touch):
-                self.midi.write_short(0xA0 + channel, self.cur_note(touch).note, self.pressure(touch))
-
-    def get_channel(self, touch):
-        if not self.bend_enabled():
-            return self.app.config.getint('MIDI', 'Channel')
-        else:
-            if 'channel' in touch.ud:
-                return touch.ud['channel']
-            for channel in self.grid.channels:
-                if channel[0] == None:
-                    channel[0] = touch.uid
-                    touch.ud['channel'] = channel[1]
-                    return touch.ud['channel']
-
-    def free_channel(self, channel):
-        self.grid.channels[channel][0] = None
-
-    def bend_enabled(self):
-        return self.app.config.getboolean('MIDI', 'Pitchbend')
-
     def cur_note(self, touch):
-        for key in self.parent.children:
+        for key in self.app.grid.children:
             if key.collide_point(*touch.pos):
-                return key
+                return key.note
 
     def prev_note(self, touch):
-        for key in self.parent.children:
+        for key in self.app.grid.children:
             if key.collide_point(*touch.ppos):
-                return key
+                return key.note
 
     def orig_note(self, touch):
-        for key in self.parent.children:
+        for key in self.app.grid.children:
             if key.collide_point(*touch.opos):
-                return key
+                return key.note
 
     def new_note(self, touch):
-        channel = self.get_channel(touch)
-        self.note_off(self.prev_note(touch).note, channel)
-        self.note_on(self.cur_note(touch).note, self.pressure(touch), channel)
+        channel = self.app.get_channel(touch)
+        self.device.note_off(self.prev_note(touch), channel)
+        self.device.note_on(self.cur_note(touch), self.pressure(touch), channel)
 
     def pressure(self, touch):
         velocity = self.app.config.getint('MIDI', 'Velocity')
         if self.app.config.getboolean('MIDI', 'Aftertouch'):
-            return velocity - round(abs(self.cur_note(touch).center_y - touch.y)) * self.app.config.getint('MIDI', 'Sensitivity')
+            return max(0, velocity - round(abs(self.center_y - touch.y)) * self.app.config.getint('MIDI', 'Sensitivity'))
         else:
             return velocity
 
-    def note_on(self, note, velocity, channel):
-        return self.midi.note_on(note, velocity, channel)
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos) or not self.note: return
+        channel = self.app.get_channel(touch)
+        if self.app.pitchbend_enabled():
+            self.device.pitch_bend(channel, 8192)
+        if self.note:
+            self.device.note_on(self.note, self.pressure(touch), channel)
 
-    def note_off(self, note, channel):
-        return self.midi.note_off(note, 0, channel)
+    def on_touch_up(self, touch):
+        if not self.collide_point(*touch.pos) or not self.orig_note(touch): return
+        channel = self.app.get_channel(touch)
+        if self.app.pitchbend_enabled():
+            self.device.note_off(self.orig_note(touch), channel)
+            self.app.free_channel(channel)
+        else:
+            self.device.note_off(self.orig_note(touch), channel)
+
+    def on_touch_move(self, touch):
+        if not self.collide_point(*touch.pos) or not self.cur_note(touch) or not self.prev_note(touch): return
+        channel = self.app.get_channel(touch)
+        if self.app.pitchbend_enabled():
+            pixel_distance = int(touch.x - touch.ox)
+            pitch_value = int(pixel_distance * 8192.0 / (self.app.config.getint('MIDI', 'PitchbendRange') * self.width) + 0.5) + 8192
+            if pitch_value > 16383:
+                pitch_value = 16383
+            elif pitch_value < 0:
+                pitch_value = 0
+            self.device.pitch_bend(channel, pitch_value)
+            if self.app.config.getboolean('MIDI', 'Aftertouch'):
+                self.device.aftertouch(channel, self.cur_note(touch), self.pressure(touch))
+        else:
+            if self.cur_note(touch) != self.prev_note(touch):
+                self.new_note(touch)
+            if self.app.config.getboolean('MIDI', 'Aftertouch'):
+                self.device.aftertouch(channel, self.cur_note(touch), self.pressure(touch))
 
 class Grid(GridLayout):
     app = ObjectProperty(None)
-    midi = ObjectProperty(None)
-    channels = [[None, c] for c in range(16)]
-
-    def _keyboard_closed(self):
-        self._keyboard.unbind(on_key_down=self._on_keyboard_down)
-        self._keyboard = None
-
-    def _on_keyboard_down(self, keyboard, keycode, text, modifiers):
-        if keycode[1] == 'spacebar':
-            Window.toggle_fullscreen()
-        elif keycode[1] == 'escape':
-            quit()
-        elif keycode[1] == 'tab':
-            self.app.open_settings()
-        return True
+    device = ObjectProperty(None)
 
     def __init__(self, **kwargs):
         super(Grid, self).__init__(**kwargs)
-        self._keyboard = Window.request_keyboard(self._keyboard_closed, self)
-        self._keyboard.bind(on_key_down=self._on_keyboard_down)
 
         rows = self.app.config.getint('MIDI', 'Rows')
         keys = self.app.config.getint('MIDI', 'Keys')
@@ -156,10 +349,10 @@ class Grid(GridLayout):
         for row in reversed(range(rows)):
             for note in reversed(range(lownote, lownote + keys)):
                 accidental = True if note % 12 in [1, 3, 6, 8, 10] else False
-                keycolor = [0,0,0,1] if accidental else [255,255,255,1]
-                textcolor = [1,1,1,1] if accidental else [0,0,0,1]
+                keycolor = [0,0,0,1] if accidental else [.4,0,0,1]
+                textcolor = [.25,.25,.25,1] if accidental else [.5,.5,.5,1]
                 label = notenames[note % 12]
-                key = Key(app=self.app, midi=self.midi, grid=self, note=note, text=label, background_color=keycolor, color=textcolor)
+                key = Key(app=self.app, device=self.device, note=note, text=label, background_color=keycolor, color=textcolor)
                 self.add_widget(key, len(self.children))
             lownote += interval
 
@@ -223,7 +416,41 @@ class SettingMIDI(SettingItem):
 
 class MasterGrid(App):
     title = 'MasterGrid'
+    root = ObjectProperty(None)
+    controls = ObjectProperty(None)
     grid = ObjectProperty(None)
+    device = ObjectProperty(None)
+    channels = [[c, None] for c in range(16)]
+    span = 10
+    lastchannel = 0
+
+    def pitchbend_enabled(self):
+        return self.config.getboolean('MIDI', 'Pitchbend')
+
+    def get_channel(self, touch):
+        if not self.pitchbend_enabled():
+            return self.config.getint('MIDI', 'Channel')
+        else:
+            if 'channel' in touch.ud:
+                return touch.ud['channel']
+            else:
+                return self.new_channel(touch)
+        return self.new_channel(touch)
+
+    def new_channel(self, touch):
+        channels = self.channels
+        lastchannel = self.lastchannel
+        for span in range(self.span):
+            candidate = lastchannel + 1 + span
+            channel = candidate % self.span
+            if channels[channel][1] == None:
+                channels[channel][1] = touch.uid
+                touch.ud['channel'] = channels[channel][0]
+                lastchannel = touch.ud['channel']
+                return touch.ud['channel']
+
+    def free_channel(self, channel):
+        self.channels[channel][1] = None
 
     def set_midi_device(self):
         c = pygame.midi.get_count()
@@ -242,29 +469,70 @@ class MasterGrid(App):
 
         self.midi = pygame.midi.Output(self.midi_device)
 
+    def load_soundfont_from_filechooser(self, filechooser):
+        self.config.set('MIDI', 'SoundFont', os.path.join(filechooser.path, filechooser.selection[0]))
+        parent = self.root.parent
+        parent.remove_widget(self.root)
+        self.root = self.build_root()
+        parent.add_widget(self.root)
+
+    def cancel_soundfont_load(self, filechooser):
+        if not self.config.get('MIDI', 'SoundFont'):
+            content = Label(text='Please select a SoundFont.')
+            popup = Popup(content=content, title='SoundFont required')
+            btn = Button(text='OK')
+            btn.bind(on_release=popup.dismiss)
+            content.add_widget(btn)
+            popup.open()
+        else:
+            filechooser.cancel()
+
     def build(self):
-        pygame.midi.init()
-        self.set_midi_device()
-        return self.build_grid()
+        if platform == 'android':
+            filechooser = FileChooserListView(filters=['*.sf2', '*.sf3'])
+            loadbtn = Button(text='Load SoundFont', on_release=self.load_soundfont_from_filechooser)
+            cancelbtn = Button(text='Cancel', on_release=self.cancel_soundfont_load)
+            settings = fluidsynth.FluidSettings()
+            synth = fluidsynth.FluidSynth(settings)
+            synth.load_soundfont(self.config.get('MIDI', 'SoundFont'))
+            driver = fluidsynth.FluidAudioDriver(synth)
+            self.device = FluidMIDI(app=self, midi=synth)
+            return sfchooser
+        else:
+            pygame.midi.init()
+            self.set_midi_device()
+            self.device = PyGameMIDI(app=self, midi=self.midi)
+            return self.build_root()
+
+    def build_controls(self):
+        self.controls = ControlBar(app=self, device=self.device, orientation='horizontal', size_hint=(1, .05))
 
     def build_grid(self):
         rows = self.config.getint('MIDI', 'Rows')
         keys = self.config.getint('MIDI', 'Keys')
-        self.grid = Grid(app=self, midi=self.midi, rows=rows, cols=keys)
-        return self.grid
+        self.grid = Grid(app=self, device=self.device, rows=rows, cols=keys)
+
+    def build_root(self):
+        self.build_controls()
+        self.build_grid()
+        self.root = BoxLayout(orientation='vertical')
+        self.root.add_widget(self.controls)
+        self.root.add_widget(self.grid)
+        return self.root
 
     def resize_grid(self):
-        self.grid.clear_widgets()
-        self.grid.add_widget(self.build_grid())
+        self.root.remove_widget(self.grid)
+        self.build_grid()
+        self.root.add_widget(self.grid)
 
     def build_config(self, config):
         config.adddefaultsection('MIDI')
-        config.setdefault('MIDI', 'Device', 'ZynAddSubFX')
+        config.setdefault('MIDI', 'Device', 'FluidSynth')
         config.setdefault('MIDI', 'Channel', '0')
         config.setdefault('MIDI', 'Velocity', '127')
         config.setdefault('MIDI', 'Aftertouch', True)
         config.setdefault('MIDI', 'Pitchbend', False)
-        config.setdefault('MIDI', 'PitchbendRange', '24')
+        config.setdefault('MIDI', 'PitchbendRange', '64')
         config.setdefault('MIDI', 'Sensitivity', '3')
         config.setdefault('MIDI', 'Rows', '13')
         config.setdefault('MIDI', 'Keys', '25')
@@ -302,7 +570,7 @@ class MasterGrid(App):
         elif token == ('MIDI', 'Pitchbend'):
             pass
         elif token == ('MIDI', 'PitchbendRange'):
-            pass
+            self.device.set_pitchbend_range(value)
         elif token == ('MIDI', 'LowNote'):
             self.resize_grid()
         elif token == ('MIDI', 'Rows'):
