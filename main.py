@@ -79,9 +79,12 @@ class FluidMIDI(EventDispatcher):
         else:
             self.reverb(self.app.config.getint('MIDI', 'Channel'), value)
 
+    def reset(self, channel):
+        self.midi.cc(channel, 123, 0)
+
     def panic(self, value):
         for channel in range(16):
-            self.midi.cc(channel, 120, 0)
+            self.reset_channel(channel)
 
 class PyGameMIDI(EventDispatcher):
     app = ObjectProperty(None)
@@ -121,9 +124,12 @@ class PyGameMIDI(EventDispatcher):
         else:
             self.reverb(self.app.config.getint('MIDI', 'Channel'), value)
 
+    def reset(self, channel):
+        self.midi.write_short(0xB0 + channel, 123, 0)
+
     def panic(self, value):
         for channel in range(16):
-            self.midi.write_short(0xB0 + channel, 120, 0)
+            self.reset(channel)
 
 class Sizer(BoxLayout):
     app = ObjectProperty(None)
@@ -179,10 +185,10 @@ class ControlBar(BoxLayout):
         menu.bind(on_press=self.app.open_settings)
         self.add_widget(menu)
         pitchbend = ToggleButton(text="Pitch Bend", state=self.get('Pitchbend'))
-        pitchbend.bind(on_release=partial(self.set, 'Pitchbend'))
+        pitchbend.bind(on_release=partial(self.set, 'Pitchbend'), on_state=partial(self.get, 'Pitchbend'))
         self.add_widget(pitchbend)
         aftertouch = ToggleButton(text="Aftertouch", state=self.get('Aftertouch'))
-        aftertouch.bind(on_release=partial(self.set, 'Aftertouch'))
+        aftertouch.bind(on_release=partial(self.set, 'Aftertouch'), on_state=partial(self.get, 'Aftertouch'))
         self.add_widget(aftertouch)
         rows = Sizer(label='Rows', app=self.app, orientation='vertical', low=8, high=36)
         self.add_widget(rows)
@@ -268,26 +274,7 @@ class Key(Button):
     app = ObjectProperty(None)
     device = ObjectProperty(None)
     note = NumericProperty()
-
-    def cur_note(self, touch):
-        for key in self.app.grid.children:
-            if key.collide_point(*touch.pos):
-                return key.note
-
-    def prev_note(self, touch):
-        for key in self.app.grid.children:
-            if key.collide_point(*touch.ppos):
-                return key.note
-
-    def orig_note(self, touch):
-        for key in self.app.grid.children:
-            if key.collide_point(*touch.opos):
-                return key.note
-
-    def new_note(self, touch):
-        channel = self.app.get_channel(touch)
-        self.device.note_off(self.prev_note(touch), channel)
-        self.device.note_on(self.cur_note(touch), self.pressure(touch), channel)
+    row = NumericProperty()
 
     def pressure(self, touch):
         velocity = self.app.config.getint('MIDI', 'Velocity')
@@ -297,25 +284,31 @@ class Key(Button):
             return velocity
 
     def on_touch_down(self, touch):
-        if not self.collide_point(*touch.pos) or not self.note: return
+        if not self.collide_point(*touch.pos): return
+        touch.ud['orig'] = touch.ud['prev'] = touch.ud['cur'] = self.note
+        touch.ud['row'] = self.row
         channel = self.app.get_channel(touch)
         if self.app.pitchbend_enabled():
             self.device.pitch_bend(channel, 8192)
-        if self.note:
-            self.device.note_on(self.note, self.pressure(touch), channel)
+        self.device.note_on(self.note, self.pressure(touch), channel)
 
     def on_touch_up(self, touch):
-        if not self.collide_point(*touch.pos) or not self.orig_note(touch): return
+        if not self.collide_point(*touch.pos): return
         channel = self.app.get_channel(touch)
         if self.app.pitchbend_enabled():
-            self.device.note_off(self.orig_note(touch), channel)
+            self.device.reset(channel)
             self.app.free_channel(channel)
         else:
-            self.device.note_off(self.orig_note(touch), channel)
+            self.device.note_off(touch.ud['cur'], channel)
 
     def on_touch_move(self, touch):
-        if not self.collide_point(*touch.pos) or not self.cur_note(touch) or not self.prev_note(touch): return
+        if 'row' not in touch.ud: return
+        if not self.app.grid.collide_point(*touch.pos) or touch.x == self.app.grid.width:
+            self.device.note_off(self.note, self.app.get_channel(touch))
+            return
+        if not self.collide_point(*touch.pos): return
         channel = self.app.get_channel(touch)
+        note = touch.ud['cur'] = self.note
         if self.app.pitchbend_enabled():
             pixel_distance = int(touch.x - touch.ox)
             pitch_value = int(pixel_distance * 8192.0 / (self.app.config.getint('MIDI', 'PitchbendRange') * self.width) + 0.5) + 8192
@@ -324,13 +317,16 @@ class Key(Button):
             elif pitch_value < 0:
                 pitch_value = 0
             self.device.pitch_bend(channel, pitch_value)
-            if self.app.config.getboolean('MIDI', 'Aftertouch'):
-                self.device.aftertouch(channel, self.cur_note(touch), self.pressure(touch))
-        else:
-            if self.cur_note(touch) != self.prev_note(touch):
-                self.new_note(touch)
-            if self.app.config.getboolean('MIDI', 'Aftertouch'):
-                self.device.aftertouch(channel, self.cur_note(touch), self.pressure(touch))
+        if not self.app.pitchbend_enabled() or self.row != touch.ud['row']:
+            if touch.ud['prev'] != note:
+                self.device.note_off(touch.ud['prev'], channel)
+                self.device.note_on(note, self.pressure(touch), channel)
+                touch.ud['prev'] = note
+                if self.app.pitchbend_enabled():
+                    touch.ud['orig'] = note
+                    touch.ud['row'] = self.row
+        if self.app.config.getboolean('MIDI', 'Aftertouch'):
+            self.device.aftertouch(channel, note, self.pressure(touch))
 
 class Grid(GridLayout):
     app = ObjectProperty(None)
@@ -346,13 +342,13 @@ class Grid(GridLayout):
 
         notenames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-        for row in reversed(range(rows)):
+        for row in range(rows):
             for note in reversed(range(lownote, lownote + keys)):
                 accidental = True if note % 12 in [1, 3, 6, 8, 10] else False
                 keycolor = [0,0,0,1] if accidental else [.4,0,0,1]
                 textcolor = [.25,.25,.25,1] if accidental else [.5,.5,.5,1]
                 label = notenames[note % 12]
-                key = Key(app=self.app, device=self.device, note=note, text=label, background_color=keycolor, color=textcolor)
+                key = Key(app=self.app, device=self.device, note=note, row=row, text=label, background_color=keycolor, color=textcolor)
                 self.add_widget(key, len(self.children))
             lownote += interval
 
