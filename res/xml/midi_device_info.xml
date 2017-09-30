@@ -1,0 +1,6 @@
+<devices>
+  <device name="MasterGrid">
+    <input-port name="input" />
+    <output-port name="output" />
+  </device>
+</devices>
