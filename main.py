@@ -1,7 +1,7 @@
 #!/usr/bin/python
 '''
 MasterGrid
-Copyright (c) 2017 Robert Oscilowski
+Copyright (c) 2018 Robert Oscilowski
 
 Multitouch Musical Instrument
 
@@ -19,7 +19,6 @@ You should have received a copy of the GNU General Public License
 along with MasterGrid. If not, see <http://www.gnu.org/licenses/>
 '''
 
-from __future__ import division
 import os
 import kivy
 from functools import partial
@@ -53,14 +52,14 @@ class PyGameMIDI(EventDispatcher):
     global midi
 
     def __init__(self, **kwargs):
-        super(PyGameMIDI, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.select_device()
 
     def select_device(self):
         c = pygame.midi.get_count()
         id_device_from_settings = -1
         for i in reversed(range(c)):
-            if pygame.midi.get_device_info(i)[1] == app.config.get('MIDI', 'Device'):
+            if pygame.midi.get_device_info(i)[1].decode() == app.config.get('MIDI', 'Device'):
                 id_device_from_settings = i
 
         if id_device_from_settings != -1:
@@ -137,7 +136,12 @@ class Key(Button):
     row = NumericProperty()
 
     def __init__(self, **kwargs):
-        super(Key, self).__init__(**kwargs)
+        super().__init__()
+        self.note = kwargs.get('note')
+        self.row = kwargs.get('row')
+        self.text = kwargs.get('text')
+        self.color = kwargs.get('color')
+        self.background_color = kwargs.get('background_color')
         self.key_color_normal = self.background_color
         self.text_color_normal = self.color
         self.highlight = rgba(app.config.get('Grid', 'Highlight'))
@@ -153,15 +157,12 @@ class Key(Button):
         else:
             return velocity
 
-    def dead_key(self, touch):
-        return False if self.note != None else True
-
     def on_touch_down(self, touch):
-        if app.grid_disabled or self.dead_key(touch):
+        if app.grid_disabled or not self.note:
             return
 
         if not self.collide_point(*touch.pos):
-            return super(Key, self).on_touch_down(touch)
+            return super().on_touch_down(touch)
 
         velocity = self.pressure(touch)
         touch.ud['note'] = touch.ud['prev'] = self.note
@@ -178,14 +179,15 @@ class Key(Button):
         touch.ud['key'] = self
 
     def on_touch_up(self, touch):
-        if app.grid_disabled or self.dead_key(touch):
+        if app.grid_disabled or 'note' not in touch.ud:
             return
 
-        if not self.collide_point(*touch.pos) or app.controls.collide_point(*touch.opos):
-            return super(Key, self).on_touch_up(touch)
+        if not self.collide_point(*touch.pos):
+            return super().on_touch_up(touch)
 
-        channel = touch.ud['channel']
-        app.free_channel(channel)
+        channel = app.get_channel(touch)
+        if app.config.getboolean('Expression', 'Pitchbend'):
+            app.free_channel(channel)
 
         midi.note_off(touch.ud['note'], channel)
 
@@ -193,26 +195,26 @@ class Key(Button):
         self.color = self.text_color_normal
 
     def on_touch_move(self, touch):
-        if app.grid_disabled or self.dead_key(touch):
+        if app.grid_disabled or 'note' not in touch.ud:
             return
 
         if not self.collide_point(*touch.pos) or app.controls.collide_point(*touch.opos):
-            return super(Key, self).on_touch_move(touch)
+            return super().on_touch_move(touch)
 
-        channel = touch.ud['channel']
+        channel = app.get_channel(touch)
         note = touch.ud['note']
         velocity = self.pressure(touch)
 
         pitchbend_enabled = app.config.getboolean('Expression', 'Pitchbend')
-        if pitchbend_enabled:
+        if pitchbend_enabled and self.note:
             bend_range = app.config.getint('Expression', 'PitchbendRange')
             distance = touch.x - touch.ud['center']    
-            if distance and abs(app.grid.width / distance) < self.width / 6:
+            if distance and abs(app.grid.width / distance) < self.width / 2:
                 if distance < 0:
                     distance += app.grid.width / distance
                 if distance > 0:
                     distance -= app.grid.width / distance
-            elif abs(distance) < self.width / 6:
+            elif abs(distance) < self.width / 2:
                 distance = 0
             if app.config.get('Grid', 'Layout') == 'Janko':
                 distance *= 2 
@@ -232,7 +234,7 @@ class Key(Button):
                 midi.note_on(touch.ud['note'], self.pressure(touch), channel)
 
         if app.config.getboolean('Expression', 'Aftertouch'):
-            midi.aftertouch(channel, note, velocity)
+            midi.aftertouch(channel, self.note, velocity)
 
         if touch.ud['key'] != self:
             touch.ud['key'].background_color = touch.ud['key'].key_color_normal
@@ -243,15 +245,15 @@ class Key(Button):
 
 class Sonome(GridLayout):
     def __init__(self, **kwargs):
-        super(Sonome, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         notenames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-        rows = app.config.getint('Grid', 'Rows')
-        keys = app.config.getint('Grid', 'Keys')
+        self.rows = app.config.getint('Grid', 'Rows')
+        self.keys = app.config.getint('Grid', 'Keys')
         octave = app.config.getint('Grid', 'Octave')
         start = octave * 12
 
-        for row in range(rows):
-            for note in reversed(range(start, start + keys)):
+        for row in range(self.rows):
+            for note in reversed(range(start, start + self.keys)):
                 accidental = True if note % 12 in [1, 3, 6, 8, 10] else False
                 keycolor = [0,0,0,1] if accidental else [255,255,255,1]
                 textcolor = [1,1,1,1] if accidental else [0,0,0,1]
@@ -267,7 +269,7 @@ class JankoRow(BoxLayout):
     start = NumericProperty()
 
     def __init__(self, **kwargs):
-        super(JankoRow, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         notenames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         keys = app.config.getint('Grid', 'Keys')
         rownum = self.rownum
@@ -287,7 +289,7 @@ class JankoRow(BoxLayout):
 
 class Janko(BoxLayout):
     def __init__(self, **kwargs):
-        super(Janko, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         keys = app.config.getint('Grid', 'Keys')
         rows = app.config.getint('Grid', 'JankoRows')
         octaves = app.config.getint('Grid', 'JankoOctaves')
@@ -304,20 +306,21 @@ class Janko(BoxLayout):
 class Sizer(BoxLayout):
     section = StringProperty()
     label = StringProperty()
+    value = NumericProperty()
     low = NumericProperty()
     high = NumericProperty()
-    inputbox = ObjectProperty(None)
-    toolbar = BooleanProperty()
+    inputbox = ObjectProperty()
 
     def __init__(self, **kwargs):
-        super(Sizer, self).__init__(**kwargs)
+        super().__init__(**kwargs)
+        self.value = self.get()
         label = Label(text=self.label)
         self.add_widget(label)
         controls = BoxLayout()
         minus = Button(text='-')
         minus.bind(on_press=self.minus)
         controls.add_widget(minus)
-        self.inputbox = TextInput(text=self.get(), multiline=False, input_filter='int', input_type='number')
+        self.inputbox = TextInput(text=str(self.get()), multiline=False, input_filter='int', input_type='number')
         self.inputbox.bind(on_text_validate=self.set)
         controls.add_widget(self.inputbox)
         plus = Button(text='+')
@@ -326,29 +329,39 @@ class Sizer(BoxLayout):
         self.add_widget(controls)
 
     def get(self):
-        return app.config.get(self.section, self.label)
+        return app.config.getint(self.section, self.label)
 
     def set(self, value):
-        self.inputbox.text = str(value)
-        app.config.set(self.section, self.label, value)
+        if isinstance(value, TextInput):
+            self.value = int(self.inputbox.text)
+        self.inputbox.text = str(self.value)
+        app.config.set(self.section, self.label, self.value)
+        if self.section == 'MIDI' and self.label == 'Instrument':
+            self.set_prog()
+        else:
+            app.resize_grid()
 
-    def plus(self, instance):
-        value = app.config.getint(self.section, self.label)
-        if self.low <= value < self.high:
-            self.set(value + 1)
-            if self.toolbar:
-                app.resize_grid()
+    def plus(self, value):
+        if self.low <= self.value < self.high:
+            self.value += 1
+            self.set(value)
 
-    def minus(self, instance):
-        value = app.config.getint(self.section, self.label)
-        if self.low < value <= self.high:
-            self.set(value - 1)
-            if self.toolbar:
-                app.resize_grid()
+    def minus(self, value):
+        if self.low < self.value <= self.high:
+            self.value -= 1
+            self.set(value)
+
+    def set_prog(self):
+        instrument = int(self.inputbox.text)
+        if app.config.getboolean('Expression', 'Pitchbend'):
+            for channel in range(16):
+                midi.set_instrument(instrument, channel)
+        else:
+            midi.set_instrument(instrument, app.config.getint('MIDI', 'Channel'))
 
 class Controls(BoxLayout):
     def __init__(self, **kwargs):
-        super(Controls, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         info = BoxLayout(orientation='vertical')
         logo = Label(text="MasterGrid")
@@ -370,18 +383,13 @@ class Controls(BoxLayout):
         aftertouch.bind(on_release=partial(self.set, 'Aftertouch'))
         self.add_widget(aftertouch)
 
-        octave = Sizer(toolbar=True, section='Grid', label='Octave', orientation='vertical', low=0, high=8)
+        octave = Sizer(section='Grid', label='Octave', orientation='vertical', low=0, high=8)
         self.add_widget(octave)
-        rows = Sizer(toolbar=True, section='Grid', label='Rows', orientation='vertical', low=8, high=36)
+        rows = Sizer(section='Grid', label='Rows', orientation='vertical', low=8, high=36)
         self.add_widget(rows)
-        keys = Sizer(toolbar=True, section='Grid', label='Keys', orientation='vertical', low=8, high=36)
+        keys = Sizer(section='Grid', label='Keys', orientation='vertical', low=8, high=36)
         self.add_widget(keys)
-
-        prog = BoxLayout(orientation='vertical')
-        prog_label = Label(text="Instrument")
-        prog_input = TextInput(on_text_validate=self.set_prog, multiline=False, input_filter='int', input_type='number')
-        prog.add_widget(prog_label)
-        prog.add_widget(prog_input)
+        prog = Sizer(section='MIDI', label='Instrument', orientation='vertical', low=0, high=127)
         self.add_widget(prog)
 
         mod = BoxLayout(orientation='vertical')
@@ -429,20 +437,6 @@ class Controls(BoxLayout):
         if enabled and label is 'Pitchbend':
             midi.set_pitchbend_range(app.config.getint('Expression', 'PitchbendRange'))
 
-    def set_prog(self, instance):
-        if isinstance(instance, int):
-            instrument = instance
-        else:
-            if int(instance.text) > 127:
-                instrument = 0
-            else:
-                instrument = int(instance.text)
-        if app.config.getboolean('Expression', 'Pitchbend'):
-            for channel in range(16):
-                midi.set_instrument(instrument, channel)
-        else:
-            midi.set_instrument(instrument, app.config.getint('MIDI', 'Channel'))
-
     def set_reverb(self, instance, value):
         for channel in range(16):
             midi.reverb(channel, int(value))
@@ -452,7 +446,7 @@ class Controls(BoxLayout):
             for channel in range(16):
                 midi.mod(channel, int(value))
         else:
-            midi.mod(app.config.getint('MIDI', 'Channel'), int(value))
+            midi.mod(app.config.getint('MIDI', 'Channel'), value)
 
     def panic(self, button):
         if platform == 'android':
@@ -469,7 +463,7 @@ class SettingMIDI(SettingItem):
         self.bind(on_release=self._create_popup)
 
     def _set_option(self, instance):
-        self.value = instance
+        self.value = instance.text
         self.popup.dismiss()
 
     def _create_popup(self, instance):
@@ -498,9 +492,9 @@ class SettingMIDI(SettingItem):
                         content.add_widget(btn)
         else:
             for i in range(device_count):
-                if pygame.midi.get_device_info(i)[3] == 1 and (pygame.midi.get_device_info(i)[4] == 0 or pygame.midi.get_device_info(i)[1] == self.value):
-                    state = 'down' if pygame.midi.get_device_info(i)[1] == self.value else 'normal'
-                    btn = ToggleButton(text=str(pygame.midi.get_device_info(i)[1]), state=state, group=uid)
+                if pygame.midi.get_device_info(i)[3] == 1 and (pygame.midi.get_device_info(i)[4] == 0 or pygame.midi.get_device_info(i)[1].decode() == self.value):
+                    state = 'down' if pygame.midi.get_device_info(i)[1].decode() == self.value else 'normal'
+                    btn = ToggleButton(text=pygame.midi.get_device_info(i)[1].decode(), state=state, group=uid)
                     btn.bind(on_release=self._set_option)
                     content.add_widget(btn)
 
@@ -530,6 +524,8 @@ class SettingRange(SettingItem):
             smin = 0; smax = 15
         elif self.key == 'Volume':
             smin = 0; smax = 127
+        elif self.key == 'Instrument':
+            smin = 0; smax = 127
         elif self.key == 'PitchbendRange':
             smin = 0; smax = 64
         elif self.key == 'Sensitivity':
@@ -548,7 +544,7 @@ class SettingRange(SettingItem):
         label = Label(text=self.desc)
         content.add_widget(label)
 
-        self.manualentry = Sizer(toolbar=False, section=self.section, label=self.key, orientation='vertical', low=smin, high=smax)
+        self.manualentry = Sizer(section=self.section, label=self.key, orientation='vertical', low=smin, high=smax)
         content.add_widget(self.manualentry)
 
         content.add_widget(Widget(size_hint_y=None, height=10))
@@ -621,13 +617,13 @@ class MasterGrid(App):
     grid_disabled = False
 
     def get_channel(self, touch):
-        if not self.config.getboolean('Expression', 'Pitchbend'):
-            return self.config.getint('MIDI', 'Channel')
-        else:
+        if self.config.getboolean('Expression', 'Pitchbend'):
             if 'channel' in touch.ud:
                 return touch.ud['channel']
             else:
                 return self.new_channel(touch)
+        else:
+            return self.config.getint('MIDI', 'Channel')
 
     def new_channel(self, touch):
         for span in range(10):
@@ -648,10 +644,8 @@ class MasterGrid(App):
         self.controls = Controls(orientation='horizontal', size_hint=(1, .064))
 
     def build_grid(self):
-        rows = self.config.getint('Grid', 'Rows')
-        cols = self.config.getint('Grid', 'Keys')
         if self.config.get('Grid', 'Layout') == 'Sonome':
-            self.grid = Sonome(rows=rows, cols=cols)
+            self.grid = Sonome()
         elif self.config.get('Grid', 'Layout') == 'Janko':
             self.grid = Janko(orientation='vertical')
 
@@ -692,23 +686,24 @@ class MasterGrid(App):
     def build_config(self, config):
         config.adddefaultsection('MIDI')
         config.setdefault('MIDI', 'Device', 'Fluidsynth')
-        config.setdefault('MIDI', 'Channel', '0')
-        config.setdefault('MIDI', 'Volume', '127')
+        config.setdefault('MIDI', 'Channel', 0)
+        config.setdefault('MIDI', 'Volume', 127)
+        config.setdefault('MIDI', 'Instrument', 0)
         config.adddefaultsection('Expression')
         config.setdefault('Expression', 'Pitchbend', True)
-        config.setdefault('Expression', 'PitchbendRange', '64')
+        config.setdefault('Expression', 'PitchbendRange', 64)
         config.setdefault('Expression', 'Aftertouch', True)
         config.setdefault('Expression', 'Vertical', True)
         config.setdefault('Expression', 'Pressure', False)
         config.setdefault('Expression', 'PolyAftertouch', True)
-        config.setdefault('Expression', 'Sensitivity', '2')
+        config.setdefault('Expression', 'Sensitivity', 2)
         config.adddefaultsection('Grid')
         config.setdefault('Grid', 'Layout', 'Sonome')
-        config.setdefault('Grid', 'JankoOctaves', '6')
-        config.setdefault('Grid', 'JankoRows', '3')
-        config.setdefault('Grid', 'Octave', '0')
-        config.setdefault('Grid', 'Rows', '10')
-        config.setdefault('Grid', 'Keys', '36')
+        config.setdefault('Grid', 'JankoOctaves', 6)
+        config.setdefault('Grid', 'JankoRows', 3)
+        config.setdefault('Grid', 'Octave', 0)
+        config.setdefault('Grid', 'Rows', 10)
+        config.setdefault('Grid', 'Keys', 36)
         config.setdefault('Grid', 'Highlight', '#8080ffff')
 
     def build_settings(self, settings):
@@ -720,6 +715,7 @@ class MasterGrid(App):
             { "type": "midi", "title": "MIDI output device", "desc": "Device or app to receive MIDI from MasterGrid", "section": "MIDI", "key": "Device"},
             { "type": "range", "title": "Default channel", "desc": "Default MIDI channel", "section": "MIDI", "key": "Channel"},
             { "type": "range", "title": "Volume", "desc": "Default MIDI note velocity (0-127)", "section": "MIDI", "key": "Volume"},
+            { "type": "range", "title": "Instrument", "desc": "MIDI instrument number (0-127)", "section": "MIDI", "key": "Instrument"},
             { "type": "bool", "title": "Pitchbend", "desc": "Continuous pitchbend", "section": "Expression", "key": "Pitchbend"},
             { "type": "range", "title": "Pitchbend Range", "desc": "Pitchbend range in semitones", "section": "Expression", "key": "PitchbendRange"},
             { "type": "bool", "title": "Aftertouch", "desc": "Aftertouch expression", "section": "Expression", "key": "Aftertouch"},
@@ -763,6 +759,9 @@ class MasterGrid(App):
             self.resize()
         else:
             pass
+
+    def get_application_config(self):
+        return super().get_application_config('~/.%(appname)s.ini')
 
 if __name__ in ('__main__', '__android__'):
     try:
