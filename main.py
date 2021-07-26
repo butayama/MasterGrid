@@ -26,6 +26,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.event import EventDispatcher
+from kivy.multistroke import xrange
 from kivy.uix.widget import Widget
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -40,6 +41,7 @@ from kivy.uix.colorpicker import ColorPicker
 from kivy.properties import BooleanProperty, ObjectProperty, NumericProperty, StringProperty
 from kivy.utils import rgba
 from kivy.utils import platform
+
 if platform == 'android':
     from jnius import autoclass
 else:
@@ -47,6 +49,7 @@ else:
 
 global app
 global midi
+
 
 class PyGameMIDI(EventDispatcher):
     global midi
@@ -131,6 +134,7 @@ class PyGameMIDI(EventDispatcher):
         for channel in range(16):
             self.reset(channel)
 
+
 class Key(Button):
     note = NumericProperty()
     row = NumericProperty()
@@ -152,7 +156,7 @@ class Key(Button):
         if app.config.getboolean('Expression', 'Vertical'):
             return max(0, velocity - int(abs(self.center_y - touch.y)) * sens)
         elif app.config.getboolean('Expression', 'Pressure') \
-            and 'pressure' in touch.profile:
+                and 'pressure' in touch.profile:
             return int(round(touch.pressure / 2))
         else:
             return velocity
@@ -175,7 +179,7 @@ class Key(Button):
         midi.note_on(self.note, velocity, channel)
 
         self.background_color = self.highlight
-        self.color = [0,0,0,1]
+        self.color = [0, 0, 0, 1]
         touch.ud['key'] = self
 
     def on_touch_up(self, touch):
@@ -208,7 +212,7 @@ class Key(Button):
         pitchbend_enabled = app.config.getboolean('Expression', 'Pitchbend')
         if pitchbend_enabled and self.note:
             bend_range = app.config.getint('Expression', 'PitchbendRange')
-            distance = touch.x - touch.ud['center']    
+            distance = touch.x - touch.ud['center']
             if distance and abs(app.grid.width / distance) < self.width / 2:
                 if distance < 0:
                     distance += app.grid.width / distance
@@ -217,7 +221,7 @@ class Key(Button):
             elif abs(distance) < self.width / 2:
                 distance = 0
             if app.config.get('Grid', 'Layout') == 'Janko':
-                distance *= 2 
+                distance *= 2
             pitch = int(distance * 8192.0 / (bend_range * self.width)) + 8192
             if pitch > 16383:
                 pitch = 16383
@@ -240,8 +244,9 @@ class Key(Button):
             touch.ud['key'].background_color = touch.ud['key'].key_color_normal
             touch.ud['key'].color = touch.ud['key'].text_color_normal
             self.background_color = self.highlight
-            self.color = [0,0,0,1]
+            self.color = [0, 0, 0, 1]
             touch.ud['key'] = self
+
 
 class Sonome(GridLayout):
     def __init__(self, **kwargs):
@@ -255,14 +260,15 @@ class Sonome(GridLayout):
         for row in range(self.rows):
             for note in reversed(range(start, start + self.keys)):
                 accidental = True if note % 12 in [1, 3, 6, 8, 10] else False
-                keycolor = [0,0,0,1] if accidental else [255,255,255,1]
-                textcolor = [1,1,1,1] if accidental else [0,0,0,1]
+                keycolor = [0, 0, 0, 1] if accidental else [255, 255, 255, 1]
+                textcolor = [1, 1, 1, 1] if accidental else [0, 0, 0, 1]
                 label = notenames[note % 12]
                 key = Key(note=note, row=row,
                           text=label, background_color=keycolor, color=textcolor,
-                          background_normal='', highlight=[.75,.75,.75,.75])
+                          background_normal='', highlight=[.75, .75, .75, .75])
                 self.add_widget(key, len(self.children))
             start += 5
+
 
 class JankoRow(BoxLayout):
     rownum = NumericProperty()
@@ -279,13 +285,14 @@ class JankoRow(BoxLayout):
             start += 1
         for note in range(start, start + keys * 2, 2):
             accidental = True if note % 12 in [1, 3, 6, 8, 10] else False
-            keycolor = [0,0,0,1] if accidental else [255,255,255,1]
-            textcolor = [1,1,1,1] if accidental else [0,0,0,1]
+            keycolor = [0, 0, 0, 1] if accidental else [255, 255, 255, 1]
+            textcolor = [1, 1, 1, 1] if accidental else [0, 0, 0, 1]
             label = notenames[note % 12]
             key = Key(note=note, row=rownum, text=label,
                       background_color=keycolor, color=textcolor,
-                      background_normal='', highlight=[.75,.75,.75,.75])
+                      background_normal='', highlight=[.75, .75, .75, .75])
             self.add_widget(key)
+
 
 class Janko(BoxLayout):
     def __init__(self, **kwargs):
@@ -300,8 +307,9 @@ class Janko(BoxLayout):
                 space = 1 / keys / 2 if not rownum % 2 else 0
                 note = start + (octave * 12)
                 row = JankoRow(rownum=rownum, start=note,
-                               pos_hint={'x':space}, orientation='horizontal')
+                               pos_hint={'x': space}, orientation='horizontal')
                 self.add_widget(row, len(row.children))
+
 
 class Sizer(BoxLayout):
     section = StringProperty()
@@ -358,6 +366,7 @@ class Sizer(BoxLayout):
                 midi.set_instrument(instrument, channel)
         else:
             midi.set_instrument(instrument, app.config.getint('MIDI', 'Channel'))
+
 
 class Controls(BoxLayout):
     def __init__(self, **kwargs):
@@ -454,6 +463,7 @@ class Controls(BoxLayout):
         else:
             midi.panic()
 
+
 class SettingMIDI(SettingItem):
     popup = ObjectProperty(None, allownone=True)
 
@@ -470,7 +480,7 @@ class SettingMIDI(SettingItem):
         global midi
         content = BoxLayout(orientation='vertical', spacing=10)
         self.popup = popup = Popup(content=content,
-            title=self.title, size_hint=(None, None), size=(400, 400))
+                                   title=self.title, size_hint=(None, None), size=(400, 400))
 
         if platform == 'android':
             devices = midi.getDevices(midi.MIDIServer)
@@ -484,15 +494,18 @@ class SettingMIDI(SettingItem):
 
         if platform == 'android':
             for i in xrange(device_count):
-                for port in devices[i].getPorts(): 
-                    if midi.getName(devices[i]) != 'MasterGrid' and (port.getType() == 2 or midi.getName(devices[i]) == self.value):
+                for port in devices[i].getPorts():
+                    if midi.getName(devices[i]) != 'MasterGrid' and (
+                            port.getType() == 2 or midi.getName(devices[i]) == self.value):
                         state = 'down' if midi.getName(devices[i]) == self.value else 'normal'
                         btn = ToggleButton(text=str(midi.getName(devices[i])), state=state, group=uid)
                         btn.bind(on_release=self._set_option)
                         content.add_widget(btn)
         else:
             for i in range(device_count):
-                if pygame.midi.get_device_info(i)[3] == 1 and (pygame.midi.get_device_info(i)[4] == 0 or pygame.midi.get_device_info(i)[1].decode() == self.value):
+                if pygame.midi.get_device_info(i)[3] == 1 and (
+                        pygame.midi.get_device_info(i)[4] == 0 or pygame.midi.get_device_info(i)[
+                        1].decode() == self.value):
                     state = 'down' if pygame.midi.get_device_info(i)[1].decode() == self.value else 'normal'
                     btn = ToggleButton(text=pygame.midi.get_device_info(i)[1].decode(), state=state, group=uid)
                     btn.bind(on_release=self._set_option)
@@ -503,6 +516,7 @@ class SettingMIDI(SettingItem):
         content.add_widget(btn)
 
         popup.open()
+
 
 class SettingRange(SettingItem):
     popup = ObjectProperty(None, allownone=True)
@@ -518,28 +532,38 @@ class SettingRange(SettingItem):
     def _create_popup(self, instance):
         content = BoxLayout(orientation='vertical', spacing=10)
         self.popup = popup = Popup(content=content,
-            title=self.title, size_hint=(.5, .5))
+                                   title=self.title, size_hint=(.5, .5))
 
         if self.key == 'Channel':
-            smin = 0; smax = 15
+            smin = 0
+            smax = 15
         elif self.key == 'Volume':
-            smin = 0; smax = 127
+            smin = 0
+            smax = 127
         elif self.key == 'Instrument':
-            smin = 0; smax = 127
+            smin = 0
+            smax = 127
         elif self.key == 'PitchbendRange':
-            smin = 0; smax = 64
+            smin = 0
+            smax = 64
         elif self.key == 'Sensitivity':
-            smin = 1; smax = 5
+            smin = 1
+            smax = 5
         elif self.key == 'JankoRows':
-            smin = 2; smax = 5
+            smin = 2
+            smax = 5
         elif self.key == 'JankoOctaves':
-            smin = 2; smax = 7
+            smin = 2
+            smax = 7
         elif self.key == 'Octave':
-            smin = 0; smax = 8
+            smin = 0
+            smax = 8
         elif self.key == 'Rows':
-            smin = 1; smax = 36
+            smin = 1
+            smax = 36
         elif self.key == 'Keys':
-            smin = 1; smax = 36
+            smin = 1
+            smax = 36
 
         label = Label(text=self.desc)
         content.add_widget(label)
@@ -559,6 +583,7 @@ class SettingRange(SettingItem):
 
         popup.open()
 
+
 class SetLayout(SettingItem):
     popup = ObjectProperty(None)
 
@@ -572,6 +597,7 @@ class SetLayout(SettingItem):
             self.value = 'Janko'
         elif self.value == 'Janko':
             self.value = 'Sonome'
+
 
 class SetColor(SettingItem):
     popup = ObjectProperty(None, allownone=True)
@@ -590,7 +616,7 @@ class SetColor(SettingItem):
         buttons = BoxLayout(orientation='horizontal')
 
         self.popup = popup = Popup(content=content, title=self.title,
-            size_hint=(1, 1))
+                                   size_hint=(1, 1))
 
         self.colorpicker = colorpicker = ColorPicker(hex_color=self.value)
         content.add_widget(colorpicker)
@@ -606,6 +632,7 @@ class SetColor(SettingItem):
         content.add_widget(buttons)
 
         popup.open()
+
 
 class MasterGrid(App):
     title = 'MasterGrid'
@@ -630,7 +657,7 @@ class MasterGrid(App):
             candidate = self.lastchannel + span
             channel = candidate % 10
             if channel == 9:
-                channel += 1 
+                channel += 1
             if self.channels[channel][1] == None:
                 self.channels[channel][1] = touch.uid
                 touch.ud['channel'] = self.channels[channel][0]
@@ -762,6 +789,7 @@ class MasterGrid(App):
 
     def get_application_config(self):
         return super().get_application_config('~/.%(appname)s.ini')
+
 
 if __name__ in ('__main__', '__android__'):
     try:
