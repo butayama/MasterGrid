@@ -1,5 +1,5 @@
 beautifulsoup4==4.9.3
-certifi==2021.5.30
+certifi==2022.12.7
 charset-normalizer==2.0.3
 Cython @ file:///C:/Users/baust/pipwin/Cython-0.29.24-cp39-cp39-win_amd64.whl
 docopt==0.6.2
